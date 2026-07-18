@@ -6,32 +6,172 @@ Short-term: ATR-based entry tiers  |  Long-term: % pullback + 6-step Playbook
 Run: python3 stock_auto.py
 """
 
+import os
 import sys
 import warnings
 warnings.filterwarnings('ignore')
 
 try:
-    import yfinance as yf
     import pandas as pd
     import numpy as np
-    from curl_cffi import requests as cffi_requests
+    import requests as _req
 except ImportError:
-    print('\n  Missing libraries. Run: pip install yfinance pandas numpy curl-cffi')
+    print('\n  Missing libraries. Run: pip install pandas numpy requests')
     sys.exit(1)
 
-# Shared session that mimics a real Chrome browser.
-# Prevents Yahoo Finance from rate-limiting server IPs (Render, Railway, etc.)
-_session = cffi_requests.Session(impersonate='chrome')
+try:
+    import yfinance as yf
+    from curl_cffi import requests as cffi_requests
+    _yf_session = cffi_requests.Session(impersonate='chrome')
+    _YF_AVAILABLE = True
+except ImportError:
+    _YF_AVAILABLE = False
 
 DIVIDER  = '─' * 62
 DIVIDER2 = '═' * 62
 
+_FMP_KEY  = os.environ.get('FMP_API_KEY')
+_FMP_BASE = 'https://financialmodelingprep.com/api/v3'
 
-# ── DATA FETCHING ──────────────────────────────────────────────────────────────
 
-def fetch(ticker):
+# ── SHARED PRICE HISTORY HELPERS ───────────────────────────────────────────────
+
+def _calc_derived(df, price, wk52_high, wk52_low):
+    """Given a DataFrame with Close/High/Low/Volume, return all derived fields."""
+    prev_cls = df['Close'].shift(1)
+    tr  = pd.concat([df['High'] - df['Low'],
+                     (df['High'] - prev_cls).abs(),
+                     (df['Low']  - prev_cls).abs()], axis=1).max(axis=1)
+    atr = float(tr.rolling(14).mean().dropna().iloc[-1])
+
+    vol_20d   = float(df['Volume'].tail(20).mean())
+    vol_5d    = float(df['Volume'].tail(5).mean())
+    vol_ratio = round(vol_5d / vol_20d, 2) if vol_20d > 0 else 1.0
+
+    price_4wk    = float(df['Close'].iloc[-20]) if len(df) >= 20 else price
+    momentum_pct = round((price - price_4wk) / price_4wk * 100, 1)
+
+    ma_50d  = float(df['Close'].tail(50).mean())
+    ma_200d = float(df['Close'].tail(200).mean()) if len(df) >= 200 else None
+
+    return dict(
+        atr          = round(atr, 2),
+        wk52_high    = wk52_high,
+        wk52_low     = wk52_low,
+        st_tier1     = round(wk52_high - 1.0 * atr, 2),
+        st_tier2     = round(wk52_high - 2.5 * atr, 2),
+        st_tier3     = round(wk52_high - 5.0 * atr, 2),
+        lt_tier1     = round(wk52_high * 0.92, 2),
+        lt_tier2     = round(wk52_high * 0.82, 2),
+        lt_tier3     = round(wk52_high * 0.72, 2),
+        vol_ratio    = vol_ratio,
+        momentum_pct = momentum_pct,
+        ma_50d       = round(ma_50d, 2),
+        ma_200d      = round(ma_200d, 2) if ma_200d else None,
+    )
+
+
+# ── FMP DATA SOURCE (used on Render / cloud) ───────────────────────────────────
+
+def _fmp(endpoint, params=None):
+    p = {'apikey': _FMP_KEY}
+    if params:
+        p.update(params)
+    r = _req.get(f'{_FMP_BASE}/{endpoint}', params=p, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+def _safe_float(val):
     try:
-        stock = yf.Ticker(ticker, session=_session)
+        return float(val) if val is not None else None
+    except (TypeError, ValueError):
+        return None
+
+def fetch_fmp(ticker):
+    try:
+        q_list  = _fmp(f'quote/{ticker}')
+        if not q_list:
+            return None, f'Ticker "{ticker}" not found. Check the spelling.'
+        q = q_list[0]
+
+        p_list  = _fmp(f'profile/{ticker}')
+        p       = p_list[0] if p_list else {}
+
+        r_list  = _fmp(f'ratios-ttm/{ticker}')
+        r       = r_list[0] if r_list else {}
+
+        inc     = _fmp(f'income-statement/{ticker}', {'period': 'annual', 'limit': 2})
+
+        hist_raw = _fmp(f'historical-price-full/{ticker}', {'timeseries': 300})
+        records  = hist_raw.get('historical', []) if isinstance(hist_raw, dict) else []
+        if not records:
+            return None, f'No price history for "{ticker}".'
+
+        df = pd.DataFrame(records[::-1])
+        for col, src in [('Close','close'),('High','high'),('Low','low'),('Volume','volume')]:
+            df[col] = pd.to_numeric(df[src], errors='coerce')
+        df = df.dropna(subset=['Close','High','Low','Volume'])
+        if len(df) < 20:
+            return None, 'Not enough price history.'
+
+        price     = _safe_float(q.get('price')) or float(df['Close'].iloc[-1])
+        wk52_high = _safe_float(q.get('yearHigh'))  or float(df['High'].max())
+        wk52_low  = _safe_float(q.get('yearLow'))   or float(df['Low'].min())
+
+        derived = _calc_derived(df, price, wk52_high, wk52_low)
+
+        # Revenue and earnings growth from income statements
+        rg = eg = None
+        if len(inc) >= 2:
+            r0 = _safe_float(inc[0].get('revenue'))
+            r1 = _safe_float(inc[1].get('revenue'))
+            if r0 and r1 and r1 != 0:
+                rg = (r0 - r1) / abs(r1)
+            n0 = _safe_float(inc[0].get('netIncome'))
+            n1 = _safe_float(inc[1].get('netIncome'))
+            if n0 and n1 and n1 != 0:
+                eg = (n0 - n1) / abs(n1)
+
+        trailing_pe = _safe_float(q.get('pe'))
+        peg         = _safe_float(r.get('pegRatioTTM') or r.get('priceEarningsToGrowthRatioTTM'))
+        gm          = _safe_float(r.get('grossProfitMarginTTM'))
+        eps         = _safe_float(q.get('eps'))
+        beta        = _safe_float(p.get('beta'))
+
+        # Estimate forward P/E from trailing P/E and earnings growth
+        forward_pe = None
+        if trailing_pe and eg and eg > -1:
+            forward_pe = round(trailing_pe / (1 + eg), 1)
+
+        last_div  = _safe_float(p.get('lastDiv')) or 0
+        div_yield = (last_div / price) if (last_div and price) else None
+
+        return {
+            'name':           p.get('companyName') or ticker,
+            'sector':         p.get('sector') or p.get('industry') or 'N/A',
+            'price':          price,
+            'market_cap':     _safe_float(q.get('marketCap')),
+            'dividend_yield': div_yield,
+            'beta':           beta,
+            'peg':            peg,
+            'forward_pe':     forward_pe,
+            'trailing_pe':    trailing_pe,
+            'revenue_growth': rg,
+            'earnings_growth':eg,
+            'eps':            eps,
+            'gross_margin':   gm,
+            **derived,
+        }, None
+
+    except Exception as e:
+        return None, f'Could not fetch data: {e}'
+
+
+# ── YFINANCE DATA SOURCE (used locally) ────────────────────────────────────────
+
+def fetch_yfinance(ticker):
+    try:
+        stock = yf.Ticker(ticker, session=_yf_session)
         info  = stock.info
 
         if not info or (info.get('regularMarketPrice') is None and info.get('currentPrice') is None):
@@ -41,42 +181,12 @@ def fetch(ticker):
         if hist.empty or len(hist) < 20:
             return None, f'Not enough price history for "{ticker}".'
 
-        price = float(info.get('currentPrice') or info.get('regularMarketPrice') or hist['Close'].iloc[-1])
-
-        # ATR (14-day) -- for short-term tiers
-        high     = hist['High']
-        low      = hist['Low']
-        prev_cls = hist['Close'].shift(1)
-        tr  = pd.concat([high - low,
-                         (high - prev_cls).abs(),
-                         (low  - prev_cls).abs()], axis=1).max(axis=1)
-        atr = float(tr.rolling(14).mean().dropna().iloc[-1])
-
+        price     = float(info.get('currentPrice') or info.get('regularMarketPrice') or hist['Close'].iloc[-1])
         wk52_high = float(info.get('fiftyTwoWeekHigh') or hist['High'].max())
         wk52_low  = float(info.get('fiftyTwoWeekLow')  or hist['Low'].min())
 
-        # Short-term tiers: ATR-based from 52-week high
-        st_tier1 = round(wk52_high - 1.0 * atr, 2)
-        st_tier2 = round(wk52_high - 2.5 * atr, 2)
-        st_tier3 = round(wk52_high - 5.0 * atr, 2)
-
-        # Long-term tiers: % pullback from 52-week high
-        lt_tier1 = round(wk52_high * 0.92, 2)   # 8% below peak  -- Tier 1
-        lt_tier2 = round(wk52_high * 0.82, 2)   # 18% below peak -- Tier 2
-        lt_tier3 = round(wk52_high * 0.72, 2)   # 28% below peak -- Tier 3
-
-        # Volume
-        vol_20d   = float(hist['Volume'].tail(20).mean())
-        vol_5d    = float(hist['Volume'].tail(5).mean())
-        vol_ratio = round(vol_5d / vol_20d, 2) if vol_20d > 0 else 1.0
-
-        # Price momentum (4-week)
-        price_4wk     = float(hist['Close'].iloc[-20]) if len(hist) >= 20 else price
-        momentum_pct  = round((price - price_4wk) / price_4wk * 100, 1)
-
-        # Moving averages
-        ma_50d   = float(hist['Close'].tail(50).mean())
-        ma_200d  = float(hist['Close'].tail(200).mean()) if len(hist) >= 200 else None
+        df = hist.rename(columns={'Close':'Close','High':'High','Low':'Low','Volume':'Volume'})
+        derived = _calc_derived(df, price, wk52_high, wk52_low)
 
         def safe(key):
             val = info.get(key)
@@ -86,38 +196,34 @@ def fetch(ticker):
                 return None
 
         return {
-            'name':             info.get('longName') or info.get('shortName') or ticker,
-            'sector':           info.get('sector') or info.get('quoteType') or 'N/A',
-            'price':            price,
-            'atr':              round(atr, 2),
-            'wk52_high':        wk52_high,
-            'wk52_low':         wk52_low,
-            # Short-term tiers (ATR-based)
-            'st_tier1':         st_tier1,
-            'st_tier2':         st_tier2,
-            'st_tier3':         st_tier3,
-            # Long-term tiers (% pullback)
-            'lt_tier1':         lt_tier1,
-            'lt_tier2':         lt_tier2,
-            'lt_tier3':         lt_tier3,
-            'vol_ratio':        vol_ratio,
-            'momentum_pct':     momentum_pct,
-            'ma_50d':           round(ma_50d, 2),
-            'ma_200d':          round(ma_200d, 2) if ma_200d else None,
-            'peg':              safe('pegRatio'),
-            'forward_pe':       safe('forwardPE'),
-            'trailing_pe':      safe('trailingPE'),
-            'revenue_growth':   safe('revenueGrowth'),
-            'earnings_growth':  safe('earningsGrowth'),
-            'eps':              safe('trailingEps'),
-            'beta':             safe('beta'),
-            'gross_margin':     safe('grossMargins'),
-            'dividend_yield':   safe('dividendYield'),
-            'market_cap':       safe('marketCap'),
+            'name':           info.get('longName') or info.get('shortName') or ticker,
+            'sector':         info.get('sector') or info.get('quoteType') or 'N/A',
+            'price':          price,
+            'market_cap':     safe('marketCap'),
+            'dividend_yield': safe('dividendYield'),
+            'beta':           safe('beta'),
+            'peg':            safe('pegRatio'),
+            'forward_pe':     safe('forwardPE'),
+            'trailing_pe':    safe('trailingPE'),
+            'revenue_growth': safe('revenueGrowth'),
+            'earnings_growth':safe('earningsGrowth'),
+            'eps':            safe('trailingEps'),
+            'gross_margin':   safe('grossMargins'),
+            **derived,
         }, None
 
     except Exception as e:
         return None, f'Could not fetch data: {e}'
+
+
+# ── UNIFIED ENTRY POINT ─────────────────────────────────────────────────────────
+
+def fetch(ticker):
+    if _FMP_KEY:
+        return fetch_fmp(ticker)
+    if _YF_AVAILABLE:
+        return fetch_yfinance(ticker)
+    return None, 'No data source available. Set FMP_API_KEY environment variable.'
 
 
 # ── HORIZON SELECTION ──────────────────────────────────────────────────────────
