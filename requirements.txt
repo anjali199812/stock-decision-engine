@@ -3,3 +3,4 @@ gunicorn
 yfinance
 pandas
 numpy
+curl-cffi

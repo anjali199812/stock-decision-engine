@@ -14,9 +14,14 @@ try:
     import yfinance as yf
     import pandas as pd
     import numpy as np
+    from curl_cffi import requests as cffi_requests
 except ImportError:
-    print('\n  Missing libraries. Run: pip install yfinance pandas numpy')
+    print('\n  Missing libraries. Run: pip install yfinance pandas numpy curl-cffi')
     sys.exit(1)
+
+# Shared session that mimics a real Chrome browser.
+# Prevents Yahoo Finance from rate-limiting server IPs (Render, Railway, etc.)
+_session = cffi_requests.Session(impersonate='chrome')
 
 DIVIDER  = '─' * 62
 DIVIDER2 = '═' * 62
@@ -26,7 +31,7 @@ DIVIDER2 = '═' * 62
 
 def fetch(ticker):
     try:
-        stock = yf.Ticker(ticker)
+        stock = yf.Ticker(ticker, session=_session)
         info  = stock.info
 
         if not info or (info.get('regularMarketPrice') is None and info.get('currentPrice') is None):
