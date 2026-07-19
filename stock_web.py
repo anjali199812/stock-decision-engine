@@ -240,10 +240,13 @@ def build_response(ticker, d, score, max_pts, factors, mode, duration):
                 {'factor': 'PEG Ratio', 'pts': '2pt', 'what': 'Are you paying a fair price for the growth rate? (P/E ÷ growth rate)', 'pass': '<1.0 undervalued (2pts), 1–2 fair (1pt)', 'fail': '>2.0 expensive (0pts)'},
                 {'factor': 'Earnings Trajectory', 'pts': '1pt', 'what': "Will next year's earnings be higher than this year's?", 'pass': 'Forward P/E < Trailing P/E', 'fail': 'Forward P/E > Trailing P/E'},
             ]},
+            {'section': 'STEP 3 — YOUR THESIS', 'max': 0, 'info': 'Why do you believe in this stock? Write one sentence before buying: what is this company doing that makes it worth more in 3–5 years? Example: "NVDA makes chips that power AI training — AI compute demand is growing faster than supply." If you cannot answer this clearly, do not buy.', 'items': []},
+            {'section': 'STEP 4 — POSITION SIZING', 'max': 0, 'info': 'How much of your total portfolio goes into this one stock? This is determined by beta (how volatile the stock is). Your recommendation is in the HOW MUCH TO BUY section below. Higher beta = more volatile = smaller position = less damage if it falls.', 'items': []},
             {'section': 'STEP 5 — ENTRY ZONE', 'max': 2, 'items': [
                 {'factor': 'Entry Zone', 'pts': '2pt', 'what': 'How far is the price below its 52-week high?', 'pass': '>28% below peak = 2pts, 8–28% = 1pt', 'fail': '<8% below peak, near all-time high'},
             ]},
-            {'section': 'LONG-TERM TREND', 'max': 1, 'items': [
+            {'section': 'STEP 6 — EXIT STRATEGY', 'max': 0, 'info': 'Know your exit before you enter. Your personalised exit conditions — based on this stock\'s actual numbers — are in the WHEN TO SELL section below. Review them after every quarterly earnings report. Never hold through a broken thesis.', 'items': []},
+            {'section': 'TREND BONUS', 'max': 1, 'items': [
                 {'factor': '200-day MA', 'pts': '1pt', 'what': 'Is the stock in a long-term uptrend or downtrend?', 'pass': 'Price above 200-day moving average', 'fail': 'Price below 200-day MA (institutions selling)'},
             ]},
         ]
@@ -428,6 +431,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .g-detail{color:var(--muted)}
 .g-pass{color:var(--green)}
 .g-fail{color:var(--red)}
+.g-info{font-size:12px;color:var(--muted);line-height:1.65;padding:6px 0 2px}
 
 /* factors */
 .sec-title{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin-bottom:14px}
@@ -618,7 +622,11 @@ function render(d){
   // ── Scoring Guide
   let gHTML = '';
   d.scoring_guide.forEach(sec=>{
-    gHTML += `<div class="g-section"><div class="g-sec-title">${sec.section}<span class="g-pts">${sec.max} pts max</span></div>`;
+    const ptsLabel = sec.max > 0 ? `${sec.max} pts max` : 'action step';
+    gHTML += `<div class="g-section"><div class="g-sec-title">${sec.section}<span class="g-pts">${ptsLabel}</span></div>`;
+    if (sec.info) {
+      gHTML += `<div class="g-info">${sec.info}</div>`;
+    }
     sec.items.forEach(it=>{
       gHTML += `<div class="g-row"><div class="g-fac">${it.factor} <span style="color:var(--dim);font-size:10px">(${it.pts})</span></div>
         <div class="g-detail">${it.what}<br><span class="g-pass">✓ ${it.pass}</span>&ensp;<span class="g-fail">✗ ${it.fail}</span></div></div>`;
