@@ -322,7 +322,7 @@ def build_response(ticker, d, score, max_pts, factors, mode, duration):
                 {'factor': 'PEG Ratio', 'pts': '2pt', 'what': 'Are you paying a fair price for the growth rate? (P/E ÷ growth rate)', 'pass': '<1.0 undervalued (2pts), 1–2 fair (1pt)', 'fail': '>2.0 expensive (0pts)'},
                 {'factor': 'Earnings Trajectory', 'pts': '1pt', 'what': "Will next year's earnings be higher than this year's?", 'pass': 'Forward P/E < Trailing P/E', 'fail': 'Forward P/E > Trailing P/E'},
             ]},
-            {'section': 'STEP 3 — YOUR THESIS', 'max': 0, 'info': thesis, 'items': []},
+            {'section': 'STEP 3 — YOUR THESIS', 'max': 0, 'info': 'The investment thesis — a data-driven summary of why this stock may be worth more in 3–5 years — is shown in full in the Factor Analysis section above, based on the stock\'s actual revenue growth, margins, profitability, and valuation.', 'items': []},
             {'section': 'STEP 4 — POSITION SIZING', 'max': 0, 'info': f'Based on beta {beta_str}, recommended allocation: {pg}. Higher beta means more volatile — size down to limit the damage if the position moves against you.', 'items': []},
             {'section': 'STEP 5 — ENTRY ZONE', 'max': 2, 'items': [
                 {'factor': 'Entry Zone', 'pts': '2pt', 'what': 'How far is the price below its 52-week high?', 'pass': '>28% below peak = 2pts, 8–28% = 1pt', 'fail': '<8% below peak, near all-time high'},
