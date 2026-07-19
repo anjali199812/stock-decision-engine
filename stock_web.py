@@ -16,6 +16,74 @@ from stock_auto import (
 app = Flask(__name__)
 
 
+# ── AUTO-THESIS GENERATOR ──────────────────────────────────────────────────────
+
+def _auto_thesis(d, ticker):
+    name   = d['name']
+    sector = d['sector']
+    rg     = d['revenue_growth']
+    gm     = d['gross_margin']
+    eps    = d['eps']
+    peg    = d['peg']
+    fpe    = d['forward_pe']
+    tpe    = d['trailing_pe']
+    price  = d['price']
+    ma200  = d['ma_200d']
+
+    chunks = []
+
+    # Growth story
+    if rg is not None:
+        rp = rg * 100
+        if rp >= 20:
+            chunks.append(f'{name} is a high-growth {sector} company expanding revenue at +{rp:.0f}% per year.')
+        elif rp >= 5:
+            chunks.append(f'{name} is a steadily growing {sector} company with +{rp:.0f}% annual revenue growth.')
+        elif rp >= 0:
+            chunks.append(f'{name} is a mature {sector} company with flat revenue growth ({rp:.1f}%) — this is a stability, not growth, thesis.')
+        else:
+            chunks.append(f'{name} is a {sector} company with declining revenue ({rp:.1f}%) — the growth story is currently broken.')
+    else:
+        chunks.append(f'{name} operates in the {sector} sector.')
+
+    # Profitability and margin
+    if eps is not None and eps > 0:
+        if gm is not None and gm >= 0.50:
+            chunks.append(f'It is profitable (EPS ${eps:.2f}) with very high gross margins of {gm*100:.0f}%, suggesting a strong competitive moat and pricing power.')
+        elif gm is not None and gm >= 0.35:
+            chunks.append(f'It is profitable (EPS ${eps:.2f}) with solid gross margins of {gm*100:.0f}%.')
+        else:
+            chunks.append(f'It is profitable (EPS ${eps:.2f}).')
+    elif eps is not None:
+        chunks.append(f'It is currently loss-making (EPS ${eps:.2f}), so the thesis depends entirely on when — and whether — it reaches profitability.')
+
+    # Valuation
+    if peg is not None:
+        if peg < 1.0:
+            chunks.append(f'At a PEG ratio of {peg:.2f}, the stock looks undervalued relative to its growth — you are paying less than $1 for every $1 of expected earnings growth.')
+        elif peg <= 2.0:
+            chunks.append(f'At a PEG of {peg:.2f}, valuation is fair for the growth on offer.')
+        else:
+            chunks.append(f'At a PEG of {peg:.2f}, the stock is priced expensively — it needs to sustain strong growth just to justify the current price.')
+    elif fpe and tpe:
+        if fpe < tpe:
+            chunks.append(f'Analysts project earnings improvement next year (Forward P/E {fpe:.1f}x vs Trailing {tpe:.1f}x), which supports the bull case.')
+        else:
+            chunks.append(f'Analysts project earnings to decline (Forward P/E {fpe:.1f}x > Trailing {tpe:.1f}x) — growth momentum may be slowing.')
+
+    # Trend confirmation
+    if ma200 and price:
+        if price > ma200:
+            chunks.append(f'The long-term trend supports this: price (${price:.2f}) is above the 200-day moving average (${ma200:.2f}).')
+        else:
+            chunks.append(f'One risk: the stock is below its 200-day moving average (${ma200:.2f}), meaning the long-term trend has not yet turned up — institutions may still be net sellers.')
+
+    if not chunks:
+        return f'Insufficient data to generate a thesis for {ticker.upper()}. Research the company\'s competitive position and growth drivers before investing.'
+
+    return ' '.join(chunks)
+
+
 # ── RESPONSE BUILDER ───────────────────────────────────────────────────────────
 
 def build_response(ticker, d, score, max_pts, factors, mode, duration):
@@ -240,7 +308,7 @@ def build_response(ticker, d, score, max_pts, factors, mode, duration):
                 {'factor': 'PEG Ratio', 'pts': '2pt', 'what': 'Are you paying a fair price for the growth rate? (P/E ÷ growth rate)', 'pass': '<1.0 undervalued (2pts), 1–2 fair (1pt)', 'fail': '>2.0 expensive (0pts)'},
                 {'factor': 'Earnings Trajectory', 'pts': '1pt', 'what': "Will next year's earnings be higher than this year's?", 'pass': 'Forward P/E < Trailing P/E', 'fail': 'Forward P/E > Trailing P/E'},
             ]},
-            {'section': 'STEP 3 — YOUR THESIS', 'max': 0, 'info': 'Why do you believe in this stock? Write one sentence before buying: what is this company doing that makes it worth more in 3–5 years? Example: "NVDA makes chips that power AI training — AI compute demand is growing faster than supply." If you cannot answer this clearly, do not buy.', 'items': []},
+            {'section': 'STEP 3 — YOUR THESIS', 'max': 0, 'info': _auto_thesis(d, ticker), 'items': []},
             {'section': 'STEP 4 — POSITION SIZING', 'max': 0, 'info': 'How much of your total portfolio goes into this one stock? This is determined by beta (how volatile the stock is). Your recommendation is in the HOW MUCH TO BUY section below. Higher beta = more volatile = smaller position = less damage if it falls.', 'items': []},
             {'section': 'STEP 5 — ENTRY ZONE', 'max': 2, 'items': [
                 {'factor': 'Entry Zone', 'pts': '2pt', 'what': 'How far is the price below its 52-week high?', 'pass': '>28% below peak = 2pts, 8–28% = 1pt', 'fail': '<8% below peak, near all-time high'},
