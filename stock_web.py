@@ -735,7 +735,7 @@ function render(d){
     if(f.status==='info'){
       fHTML += `<div class="f-row" style="grid-template-columns:26px 1fr;align-items:start;padding:10px 0">
         <div class="f-icon info" style="margin-top:2px">${ic}</div>
-        <div class="f-body"><div class="f-note" style="line-height:1.65;color:var(--muted)">${f.note}</div></div>
+        <div class="f-body"><div class="f-note" style="white-space:normal;overflow:visible;text-overflow:clip;line-height:1.65;color:var(--muted)">${f.note}</div></div>
       </div>`;
     } else {
       const fp=f.max>0?Math.round(f.scored/f.max*100):0;
