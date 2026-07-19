@@ -94,13 +94,27 @@ def build_response(ticker, d, score, max_pts, factors, mode, duration):
     else:
         decision, verdict = 'SKIP',  'Do not buy — too many conditions are unfavourable'
 
-    price = d['price']
+    price  = d['price']
+    thesis = _auto_thesis(d, ticker) if mode == 'long' else None
 
     # ── Factors
     factor_list = [
         {'label': label, 'scored': s, 'max': m, 'note': note, 'status': status}
         for label, s, m, note, status in factors
     ]
+
+    if mode == 'long':
+        pg       = position_guide(d['beta'])
+        beta_str = f'{d["beta"]:.2f}' if d['beta'] else 'N/A'
+        factor_list.insert(6, {
+            'label': 'Your Thesis', 'scored': 0, 'max': 0,
+            'note': thesis, 'status': 'info',
+        })
+        factor_list.insert(7, {
+            'label': 'Position Size', 'scored': 0, 'max': 0,
+            'note': f'Beta {beta_str} — {pg}.',
+            'status': 'info',
+        })
 
     # ── Tiers
     if mode == 'short':
@@ -308,8 +322,8 @@ def build_response(ticker, d, score, max_pts, factors, mode, duration):
                 {'factor': 'PEG Ratio', 'pts': '2pt', 'what': 'Are you paying a fair price for the growth rate? (P/E ÷ growth rate)', 'pass': '<1.0 undervalued (2pts), 1–2 fair (1pt)', 'fail': '>2.0 expensive (0pts)'},
                 {'factor': 'Earnings Trajectory', 'pts': '1pt', 'what': "Will next year's earnings be higher than this year's?", 'pass': 'Forward P/E < Trailing P/E', 'fail': 'Forward P/E > Trailing P/E'},
             ]},
-            {'section': 'STEP 3 — YOUR THESIS', 'max': 0, 'info': _auto_thesis(d, ticker), 'items': []},
-            {'section': 'STEP 4 — POSITION SIZING', 'max': 0, 'info': 'How much of your total portfolio goes into this one stock? This is determined by beta (how volatile the stock is). Your recommendation is in the HOW MUCH TO BUY section below. Higher beta = more volatile = smaller position = less damage if it falls.', 'items': []},
+            {'section': 'STEP 3 — YOUR THESIS', 'max': 0, 'info': thesis, 'items': []},
+            {'section': 'STEP 4 — POSITION SIZING', 'max': 0, 'info': f'Based on beta {beta_str}, recommended allocation: {pg}. Higher beta means more volatile — size down to limit the damage if the position moves against you.', 'items': []},
             {'section': 'STEP 5 — ENTRY ZONE', 'max': 2, 'items': [
                 {'factor': 'Entry Zone', 'pts': '2pt', 'what': 'How far is the price below its 52-week high?', 'pass': '>28% below peak = 2pts, 8–28% = 1pt', 'fail': '<8% below peak, near all-time high'},
             ]},
@@ -512,6 +526,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .f-icon.fail{background:var(--red-bg);color:var(--red)}
 .f-icon.watch{background:var(--amber-bg);color:var(--amber)}
 .f-icon.na{background:var(--surf2);color:var(--dim)}
+.f-icon.info{background:var(--blue-bg);color:var(--blue);font-style:italic;font-size:13px}
 .f-body{min-width:0}
 .f-label{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .f-note{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
@@ -638,8 +653,8 @@ async function analyze(){
 function showErr(m){ const b=document.getElementById('errBox'); b.textContent=m; b.style.display='block'; }
 function hideErr(){ document.getElementById('errBox').style.display='none'; }
 function show(id,v){ document.getElementById(id).style.display=v?'block':'none'; }
-function sc(s){ return s==='+'?'pass':s==='-'?'fail':s==='~'?'watch':'na'; }
-function icon(s){ return s==='+'?'✓':s==='-'?'✗':s==='~'?'~':'?'; }
+function sc(s){ return s==='+'?'pass':s==='-'?'fail':s==='~'?'watch':s==='info'?'info':'na'; }
+function icon(s){ return s==='+'?'✓':s==='-'?'✗':s==='~'?'~':s==='info'?'i':'?'; }
 function pct(p,l,h){ return h===l?50:Math.round((p-l)/(h-l)*100); }
 
 function parseBounds(r){
@@ -711,18 +726,26 @@ function render(d){
 
   // ── Factor Analysis
   const HDRS = d.mode==='long'
-    ? {0:'STEP 1 — Business Quality (4 pts)',3:'STEP 2 — Valuation (3 pts)',5:'STEP 5 — Entry Zone (2 pts)',7:'Long-Term Trend (1 pt)'}
+    ? {0:'STEP 1 — Business Quality (4 pts)',4:'STEP 2 — Valuation (3 pts)',6:'STEP 3 — Your Thesis',7:'STEP 4 — Position Sizing',8:'STEP 5 — Entry Zone (2 pts)',9:'Trend Bonus (1 pt)'}
     : {0:'Business Quality (3 pts)',3:'Valuation (2 pts)',5:'Entry Timing (4 pts)'};
   let fHTML = '';
   d.factors.forEach((f,i)=>{
     if(HDRS[i]) fHTML += `<div class="f-sec-hdr">${HDRS[i]}</div>`;
-    const s=sc(f.status), ic=icon(f.status), fp=f.max>0?Math.round(f.scored/f.max*100):0;
-    fHTML += `<div class="f-row">
-      <div class="f-icon ${s}">${ic}</div>
-      <div class="f-body"><div class="f-label">${f.label}</div><div class="f-note">${f.note}</div></div>
-      <div class="f-score"><div class="f-num ${s}">${f.scored}/${f.max}</div>
-        <div class="mini"><div class="mini-fill ${s}" style="width:${fp}%"></div></div></div>
-    </div>`;
+    const s=sc(f.status), ic=icon(f.status);
+    if(f.status==='info'){
+      fHTML += `<div class="f-row" style="grid-template-columns:26px 1fr;align-items:start;padding:10px 0">
+        <div class="f-icon info" style="margin-top:2px">${ic}</div>
+        <div class="f-body"><div class="f-note" style="line-height:1.65;color:var(--muted)">${f.note}</div></div>
+      </div>`;
+    } else {
+      const fp=f.max>0?Math.round(f.scored/f.max*100):0;
+      fHTML += `<div class="f-row">
+        <div class="f-icon ${s}">${ic}</div>
+        <div class="f-body"><div class="f-label">${f.label}</div><div class="f-note">${f.note}</div></div>
+        <div class="f-score"><div class="f-num ${s}">${f.scored}/${f.max}</div>
+          <div class="mini"><div class="mini-fill ${s}" style="width:${fp}%"></div></div></div>
+      </div>`;
+    }
   });
   R.innerHTML += `<div class="card"><div class="sec-title">Factor Analysis</div>${fHTML}</div>`;
 
