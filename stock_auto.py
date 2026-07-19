@@ -30,8 +30,8 @@ except ImportError:
 DIVIDER  = '─' * 62
 DIVIDER2 = '═' * 62
 
-_FMP_KEY  = os.environ.get('FMP_API_KEY')
-_FMP_BASE = 'https://financialmodelingprep.com/api/v3'
+_AV_KEY  = os.environ.get('ALPHAVANTAGE_API_KEY')
+_AV_BASE = 'https://www.alphavantage.co/query'
 
 
 # ── SHARED PRICE HISTORY HELPERS ───────────────────────────────────────────────
@@ -71,95 +71,75 @@ def _calc_derived(df, price, wk52_high, wk52_low):
     )
 
 
-# ── FMP DATA SOURCE (used on Render / cloud) ───────────────────────────────────
-
-def _fmp(endpoint, params=None):
-    p = {'apikey': _FMP_KEY}
-    if params:
-        p.update(params)
-    r = _req.get(f'{_FMP_BASE}/{endpoint}', params=p, timeout=15)
-    r.raise_for_status()
-    return r.json()
+# ── ALPHA VANTAGE DATA SOURCE (used on Render / cloud) ─────────────────────────
 
 def _safe_float(val):
+    if val in (None, 'None', '-', '', 'N/A'):
+        return None
     try:
-        return float(val) if val is not None else None
+        return float(val)
     except (TypeError, ValueError):
         return None
 
-def fetch_fmp(ticker):
+def _av(params):
+    p = {'apikey': _AV_KEY, **params}
+    r = _req.get(_AV_BASE, params=p, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+def fetch_alphavantage(ticker):
     try:
-        q_list  = _fmp(f'quote/{ticker}')
-        if not q_list:
-            return None, f'Ticker "{ticker}" not found. Check the spelling.'
-        q = q_list[0]
+        ov = _av({'function': 'OVERVIEW', 'symbol': ticker})
+        if not ov or 'Symbol' not in ov:
+            msg = ov.get('Note') or ov.get('Information') or f'Ticker "{ticker}" not found.'
+            return None, msg
 
-        p_list  = _fmp(f'profile/{ticker}')
-        p       = p_list[0] if p_list else {}
+        ts = _av({'function': 'TIME_SERIES_DAILY_ADJUSTED', 'symbol': ticker, 'outputsize': 'full'})
+        series = ts.get('Time Series (Daily)', {})
+        if not series:
+            note = ts.get('Note') or ts.get('Information') or 'No price data returned.'
+            return None, note
 
-        r_list  = _fmp(f'ratios-ttm/{ticker}')
-        r       = r_list[0] if r_list else {}
+        records = []
+        for date in sorted(series.keys()):
+            d = series[date]
+            records.append({
+                'Close':  float(d['5. adjusted close']),
+                'High':   float(d['2. high']),
+                'Low':    float(d['3. low']),
+                'Volume': float(d['6. volume']),
+            })
 
-        inc     = _fmp(f'income-statement/{ticker}', {'period': 'annual', 'limit': 2})
-
-        hist_raw = _fmp(f'historical-price-full/{ticker}', {'timeseries': 300})
-        records  = hist_raw.get('historical', []) if isinstance(hist_raw, dict) else []
-        if not records:
-            return None, f'No price history for "{ticker}".'
-
-        df = pd.DataFrame(records[::-1])
-        for col, src in [('Close','close'),('High','high'),('Low','low'),('Volume','volume')]:
-            df[col] = pd.to_numeric(df[src], errors='coerce')
-        df = df.dropna(subset=['Close','High','Low','Volume'])
+        df = pd.DataFrame(records)
         if len(df) < 20:
             return None, 'Not enough price history.'
 
-        price     = _safe_float(q.get('price')) or float(df['Close'].iloc[-1])
-        wk52_high = _safe_float(q.get('yearHigh'))  or float(df['High'].max())
-        wk52_low  = _safe_float(q.get('yearLow'))   or float(df['Low'].min())
+        price     = float(df['Close'].iloc[-1])
+        wk52_high = _safe_float(ov.get('52WeekHigh')) or float(df['High'].tail(252).max())
+        wk52_low  = _safe_float(ov.get('52WeekLow'))  or float(df['Low'].tail(252).min())
 
         derived = _calc_derived(df, price, wk52_high, wk52_low)
 
-        # Revenue and earnings growth from income statements
-        rg = eg = None
-        if len(inc) >= 2:
-            r0 = _safe_float(inc[0].get('revenue'))
-            r1 = _safe_float(inc[1].get('revenue'))
-            if r0 and r1 and r1 != 0:
-                rg = (r0 - r1) / abs(r1)
-            n0 = _safe_float(inc[0].get('netIncome'))
-            n1 = _safe_float(inc[1].get('netIncome'))
-            if n0 and n1 and n1 != 0:
-                eg = (n0 - n1) / abs(n1)
+        gp  = _safe_float(ov.get('GrossProfitTTM'))
+        rev = _safe_float(ov.get('RevenueTTM'))
+        gm  = (gp / rev) if (gp and rev and rev != 0) else None
 
-        trailing_pe = _safe_float(q.get('pe'))
-        peg         = _safe_float(r.get('pegRatioTTM') or r.get('priceEarningsToGrowthRatioTTM'))
-        gm          = _safe_float(r.get('grossProfitMarginTTM'))
-        eps         = _safe_float(q.get('eps'))
-        beta        = _safe_float(p.get('beta'))
-
-        # Estimate forward P/E from trailing P/E and earnings growth
-        forward_pe = None
-        if trailing_pe and eg and eg > -1:
-            forward_pe = round(trailing_pe / (1 + eg), 1)
-
-        last_div  = _safe_float(p.get('lastDiv')) or 0
-        div_yield = (last_div / price) if (last_div and price) else None
+        trailing_pe = _safe_float(ov.get('TrailingPE')) or _safe_float(ov.get('PERatio'))
 
         return {
-            'name':           p.get('companyName') or ticker,
-            'sector':         p.get('sector') or p.get('industry') or 'N/A',
-            'price':          price,
-            'market_cap':     _safe_float(q.get('marketCap')),
-            'dividend_yield': div_yield,
-            'beta':           beta,
-            'peg':            peg,
-            'forward_pe':     forward_pe,
-            'trailing_pe':    trailing_pe,
-            'revenue_growth': rg,
-            'earnings_growth':eg,
-            'eps':            eps,
-            'gross_margin':   gm,
+            'name':            ov.get('Name') or ticker,
+            'sector':          ov.get('Sector') or 'N/A',
+            'price':           price,
+            'market_cap':      _safe_float(ov.get('MarketCapitalization')),
+            'dividend_yield':  _safe_float(ov.get('DividendYield')),
+            'beta':            _safe_float(ov.get('Beta')),
+            'peg':             _safe_float(ov.get('PEGRatio')),
+            'forward_pe':      _safe_float(ov.get('ForwardPE')),
+            'trailing_pe':     trailing_pe,
+            'revenue_growth':  _safe_float(ov.get('QuarterlyRevenueGrowthYOY')),
+            'earnings_growth': _safe_float(ov.get('QuarterlyEarningsGrowthYOY')),
+            'eps':             _safe_float(ov.get('EPS')),
+            'gross_margin':    gm,
             **derived,
         }, None
 
@@ -219,11 +199,11 @@ def fetch_yfinance(ticker):
 # ── UNIFIED ENTRY POINT ─────────────────────────────────────────────────────────
 
 def fetch(ticker):
-    if _FMP_KEY:
-        return fetch_fmp(ticker)
+    if _AV_KEY:
+        return fetch_alphavantage(ticker)
     if _YF_AVAILABLE:
         return fetch_yfinance(ticker)
-    return None, 'No data source available. Set FMP_API_KEY environment variable.'
+    return None, 'No data source available. Set ALPHAVANTAGE_API_KEY environment variable.'
 
 
 # ── HORIZON SELECTION ──────────────────────────────────────────────────────────
